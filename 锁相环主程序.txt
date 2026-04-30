@@ -1,0 +1,296 @@
+#include "stm32f4xx.h"
+#include "stdio.h"
+#include "usart.h"
+#include "delay.h"
+#include "led.h" 
+#include "G.h"
+#include "timer.h"
+#include "math.h"
+#include "arm_math.h"  
+#include "kalman.h"
+#include "fft.h"
+#include "adc.h"
+#include "AD9833.h"	
+#include <stdbool.h>
+#include "AD9959.h"
+#include "dac.h"
+#include "AD9851.h"
+
+//本代码为7/24日锁相环改进最终代码
+
+bool Separate=false;
+
+extern int t;
+extern float fft_outputbuf[FFT_LENGTH];
+extern u8 Res;
+
+uint32_t frequency_A,frequency_B;
+ 
+int phase_difference_A;
+int phase_difference_B;
+int phase_difference_A1;
+int phase_difference_B1;
+extern float phase_A,phase_B,phase;
+
+extern float frequency;
+int frequency2_A;
+int frequency2_B;
+double frequency2_AA,frequency2_BB;
+
+float phase_A_CS=0.0f;
+float phase_B_CS=0.0f;
+float phase_A_SX=0.0f;
+float phase_B_SX=0.0f;
+
+uint32_t peak_idx;
+u8 QCZ=100;
+u8 QCZ1=0;
+
+int QCZ_Phase[2];
+int QCZ_Phase1[2];
+int Phase=0;
+
+float ZE;
+int SBP=0;
+
+uint16_t waveform_A;
+uint16_t waveform_B;
+
+int i;
+
+int main(void)
+{
+	TIM2_Init();
+    TIM_Cmd(TIM2, ENABLE);
+    arm_cfft_radix4_init_f32(&scfft,FFT_LENGTH,0,1);//初始化scfft结构体，设定FFT相关参数
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);//设置系统中断优先级分组2
+	  uart_init(115200);
+	  delay_init(168);
+	  LED_Init();
+    Adc_Init(); //初始化adc
+    Adc2_Init();
+    Adc3_Init();
+    DMA1_Init();//初始化dma
+    DMA2_Init();//初始化dma
+    DMA3_Init();//初始化dma
+    //AD9833_Init();//IO口及AD9833寄存器初始化
+    //AD9833_Init1();//IO口及AD9833寄存器初始化
+		AD9959_Init();
+		IO_Update();
+
+    Init_AD9851(); //AD9851初始化
+
+    AD9851_Reset_Sreial(); //AD9851复位
+
+    Dac1_Init(); //DAC初始化
+    DAC_SetChannel1Data(DAC_Align_12b_R, 1100); //DAC1输出0V
+
+    sampfre=409756;   //设置采样的频率
+
+    TIM3_Int_Init(5-1,41-1);	 
+    TIM4_Int_Init(1000-1,8400-1);//定时器时钟84M，分频系数8400，所以84M/8400=10Khz的计数频率，计数5000次为500ms  
+
+    TIM_Cmd(TIM3, ENABLE);
+    
+		delay_ms(1000);
+		//AD9851_Write_Serial(0x01,30000);
+		//AD9851_Write_Serial(0x01,30000);
+		//AD9851_Write_Serial1(20000);
+	
+		
+		//printf("111frequency_A:%d  frequency_B:%d\r\n",frequency_A,frequency_B);
+
+    //printf("222frequency2_A:%d  frequency2_B:%d\r\n",frequency2_A,frequency2_B);
+
+//    AD9959_Set_Fre(CH0,2000000); //设置AD9959输出频率
+//    AD9959_Set_Amp(CH0,1023); //设置AD9959输出
+
+//    AD9959_Set_Fre(CH3,40000000); //设置AD9959输出频率
+//    AD9959_Set_Amp(CH3,1023); //设置AD9959输出
+
+//    
+
+//    AD9959_Set_Fre(CH1,1000000); //设置AD9959输出频率
+//    AD9959_Set_Amp(CH1,1023); //设置AD9959输出  
+
+//    IO_Update(); //更新AD9959输出
+
+
+//		for(i=0;i<4095;i++)
+//		{
+//			printf("%d buff_adc[%d]\r\n",buff_adc[i],i);
+//		}
+// // 
+//if(0==1) { 
+while(1)     
+{  
+// 	   printf("111frequency_A:%d  frequency_B:%d\r\n",frequency_A,frequency_B);
+// 	   printf("waveformA:%d  waveformB:%d\r\n",waveform_A,waveform_B);
+// 	 	   printf("fft_outputbuf[peak1_idx]:%f  fft_outputbuf[peak2_idx]:%f\r\n",fft_outputbuf[0],fft_outputbuf[0]);
+
+	
+ 	   //printf("flag_ADC %d  flag_ADC1 %d flag_ADC2 %d ",flag_ADC,flag_ADC1,flag_ADC2);
+
+    /******************************得到信号A和信号B***********************************************/    
+      while(flag_ADC==0||flag_ADC1==0||flag_ADC2==0) {} //等待采样完成
+
+ //			 for(i=0;i<4095;i++)
+ //			 {
+ //				 printf("%d buff_adc[%d]\r\n",buff_adc2[i],i);
+ //			 }
+         QCZ_FFT(buff_adc); //采集C信号
+ //			 delay_ms(1000);
+  //printf("asdfsa  flag_ADC %d  flag_ADC1 %d flag_ADC2 %d ",flag_ADC,flag_ADC1,flag_ADC2);
+     
+         if(fft_outputbuf[peak1_idx]<500&&fft_outputbuf[peak1_idx]>420)
+         { waveform_A=AD9833_OUT_SINUS; }
+         if(fft_outputbuf[peak2_idx]<500&&fft_outputbuf[peak2_idx]>420)
+         { waveform_B=AD9833_OUT_SINUS; }
+         if(fft_outputbuf[peak1_idx]<400)
+         { waveform_A=AD9833_OUT_TRIANGLE; }
+         if(fft_outputbuf[peak2_idx]<400)
+         { waveform_B=AD9833_OUT_TRIANGLE; }
+
+          frequency_A=peak1_idx*100; //得A信号频率
+          frequency_B=peak2_idx*100; //得B信号频率
+  /******************************得到信号A和信号B***********************************************/ 
+ 
+         
+  /******************************鉴相***********************************************/
+           AD9959_Set_Fre(CH0,frequency_A);
+				 //printf("%d\r\n",frequency_A);
+ 				  AD9959_Set_Amp(CH0,1023);
+ 				  IO_Update();
+          AD9851_Write_Serial(0x01,frequency_B);
+
+       
+            delay_ms(100);
+         
+          flag_ADC=0;flag_ADC1=0;flag_ADC2=0;
+          TIM_Cmd(TIM3, ENABLE);
+          	   //printf("222flag_ADC %d   ",flag_ADC);
+
+          while(flag_ADC==0||flag_ADC1==0||flag_ADC2==0) {} //等待采样完成
+          QCZ_FFT(buff_adc); //采集C信号
+          phase_A_CS=phase_A; //提取C信号中A的相位信息
+          phase_B_CS=phase_B;
+	        
+          if(peak1_idx>peak2_idx) //索引误差纠正
+          {
+              peak_idx=peak1_idx;
+              peak1_idx=peak2_idx;
+              peak2_idx=peak_idx;
+              phase_A_CS=phase_B;
+              phase_B_CS=phase_A;
+          }
+          frequency_A=peak1_idx*100; //得A信号频率（在4096下才是乘100）
+          frequency_B=peak2_idx*100; //得B信号频率
+
+          QCZ_FFT1(buff_adc2); //采集A'信号
+          phase_A_SX=phase; //A'相位信息
+          frequency2_A=(frequency+100)/1000; //频率取整
+          frequency2_A=frequency2_A*1000;
+
+         
+         phase_difference_A=phase_A_CS-phase_A_SX; //得A与A'的相位差（鉴相）
+        
+
+          QCZ_FFT1(buff_adc3); //采集B'信号
+          phase_B_SX=phase; //B'相位信息
+          frequency2_B=(frequency+100)/1000; //频率取整
+          frequency2_B=frequency2_B*1000;
+
+          phase_difference_B=phase_B_CS-phase_B_SX; //得B与B'的相位差（鉴相）
+					if(phase_difference_B>180) {phase_difference_B=phase_difference_B-360;} 
+if(phase_difference_B<-180) { phase_difference_B=phase_difference_B+360;}
+
+					
+ 				 //测试代码，记得删除
+ 				 //frequency2_B=frequency_B;
+				 printf("%d  frequency2_B\r\n",frequency2_B);
+					printf("%d  frequency_B\r\n",frequency_B);
+            if(frequency2_A==frequency_A&&frequency2_B==frequency_B) { Separate=true; frequency2_AA=frequency_A; frequency2_BB=frequency_B; Phase=-1; ZE=frequency_B/frequency_A; }
+            else {AD9959_Set_Fre(CH0,frequency_A);AD9959_Set_Amp(CH0,1023);AD9959_Set_Phase(CH0,phase_A_CS/16383*360);	IO_Update();
+							AD9851_Write_Serial(0x01,frequency_B);
+							//AD9851_SetFrequencyOnly(frequency_B);
+							printf("%d\r\n",111); }//AD9833_SetFrequencyQuick1(frequency_B,waveform_B); } 
+ /******************************鉴相***********************************************/
+ 					 //printf("frequency2_B%d frequency_B%d",frequency2_B,frequency_B);
+ 					//printf("frequency2_A%d frequency_A%d",frequency2_A,frequency_A);
+            //printf("Seperate:%d\r\n",Separate);
+            while(Separate) //开始锁相
+            {
+                 //printf("%f  frequency2_B\r\n",frequency2_B);
+					//printf("%f  frequency_B\r\n",frequency_B);
+                  if(Phase==-1) { QCZ_Phase[0]=phase_difference_A; QCZ_Phase1[0]=phase_difference_B; }
+                  else { QCZ_Phase[0]=phase_difference_A1; QCZ_Phase1[0]=phase_difference_B1; Phase=0;  }
+                  Phase++;
+                  flag_ADC=0;flag_ADC1=0;flag_ADC2=0;
+                  TIM_Cmd(TIM3, ENABLE);
+                  while(flag_ADC==0||flag_ADC1==0||flag_ADC1==0) {} //等待采样完成
+
+                  QCZ_FFT(buff_adc); //采集C信号
+                  phase_A_CS=phase_A; //提取C信号中A的相位信息
+                  phase_B_CS=phase_B;
+										uint32_t start_time = TIM2_GetCounter();
+                  if(peak1_idx>peak2_idx) //索引误差纠正
+                 {
+                  peak_idx=peak1_idx;
+                  peak1_idx=peak2_idx;
+                  peak2_idx=peak_idx;
+                  phase_A_CS=phase_B;
+                  phase_B_CS=phase_A;
+                 }
+                  frequency_A=peak1_idx*100; //得A信号频率
+                  frequency_B=peak2_idx*100; //得B信号频率
+
+                 QCZ_FFT1(buff_adc2); //采集A'信号
+                 phase_A_SX=phase; //A'相位信息
+                 frequency2_A=(frequency+100)/1000; //频率取整
+                 frequency2_A=frequency2_A*1000;
+
+                 phase_difference_A1=phase_A_CS-phase_A_SX; //得A与A'的相位差（鉴相）
+                 
+
+                 QCZ_FFT1(buff_adc3); //采集B'信号
+                 phase_B_SX=phase; //B'相位信息
+                 frequency2_B=(frequency+100)/1000; //频率取整
+                 frequency2_B=frequency2_B*1000;
+                
+                 phase_difference_B1=phase_B_CS-phase_B_SX; //得B与B'的相位差（鉴相）
+								 if(phase_difference_B1>180) {phase_difference_B1=phase_difference_B1-360;} 
+if(phase_difference_B1<-180) { phase_difference_B1=phase_difference_B1+360;}
+
+
+                 QCZ_Phase[1]=phase_difference_A1;Phase=0;
+                 QCZ_Phase1[1]=phase_difference_B1;Phase=0;
+         
+
+                 if(QCZ_Phase[0]>QCZ_Phase[1]) {frequency2_AA=frequency2_AA+0.1; AD9959_Set_Fre(CH0,frequency2_AA);AD9959_Set_Amp(CH0,1023);IO_Update();  }
+                 else if(QCZ_Phase[0]<=QCZ_Phase[1]) {frequency2_AA=frequency2_AA-0.1;  AD9959_Set_Fre(CH0,frequency2_AA);AD9959_Set_Amp(CH0,1023);IO_Update();  }
+                
+                 if(QCZ_Phase1[0]%360<QCZ_Phase1[1]%360) { frequency2_BB=frequency2_BB+0.04f;
+									AD9851_Write_Serial(0x01,frequency2_BB);
+									 //AD9851_SetFrequencyOnly(frequency_B);
+									 }//AD9833_SetFrequencyQuick1(frequency2_BB,waveform_B); }
+                 else if(QCZ_Phase1[0]%360>QCZ_Phase1[1]%360) { frequency2_BB=frequency2_BB-0.1f; 
+									 AD9851_Write_Serial(0x01,frequency2_BB);
+									 printf("%f\r\n",frequency2_BB);
+									 //AD9851_SetFrequencyOnly(frequency_B);
+									 }// AD9833_SetFrequencyQuick1(frequency2_BB,waveform_B); }
+
+
+                 flag_ADC=0;flag_ADC1=0;flag_ADC2=0;
+                 TIM_Cmd(TIM3, ENABLE);
+            }
+            //delay_ms(1000);
+            flag_ADC=0;flag_ADC1=0;flag_ADC2=0;
+            TIM_Cmd(TIM3, ENABLE);
+
+                
+           
+           
+           
+   }
+
+ }
